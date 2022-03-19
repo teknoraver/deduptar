@@ -1,0 +1,111 @@
+# © Copyright Deduptar Authors (see CONTRIBUTORS.md)
+# This needs to be run on a suitable Linux system, on a writable btrfs volume.
+# Dependencies: GNU tar, GNU awk, rsync
+
+TESTDIR := test_rw
+TARUP_DIR := input_tree
+TESTTREE := $(TESTDIR)/$(TARUP_DIR)
+RSYNCCMP := rsync -haxHAXi --delete --dry-run $(TESTTREE)
+TAR := gtar
+AWK := gawk
+ASSERT_NO_OUTPUT := $(AWK) 'END {exit (NR < 0)}'
+1MB := 1048576
+2MB := 2097152
+2MB_PLUS_1_PAGE = ($(2MB) + 4096)
+BTRFSDU_ASSERT_1MB_SHARED := $(AWK) 'ENDFILE {exit $$3 != $(1MB)}'
+BTRFSDU_ASSERT_2MB_SHARED := $(AWK) 'ENDFILE {exit $$3 != $(2MB_PLUS_1_PAGE)}'
+HAPPY := @echo "👍"
+
+.PHONY: test-clean test-treesetup test-gnutar-pack test-deduptar-pack test-maketars test-deduptar-unpacks test-gnutar-unpacks test-unpacks test-runtests test-dedupped-input test-dedupped-output test-facsimiles
+.NOTPARALLEL:
+
+test-clean:
+	rm -rf $(TESTDIR)/
+
+test-treesetup:
+	#
+	#
+	# Creating test filesystem tree…
+	#
+	mkdir -p $(TESTTREE)/a_directory
+	touch $(TESTTREE)/a_directory/a_zero_length_file
+	ln -s a_directory $(TESTTREE)/symlink_to_a_directory
+	ln -sr $(TESTTREE)/. $(TESTTREE)/a_cyclic_symlink
+	yes @ | tr -d '\n' | dd count=12 status=none of=$(TESTTREE)/a_directory/1½_page_of_@_of_which_1_page_can_be_shared.bin  # this will trigger a clone of 1 page, then copy in/out of the 2KB tail
+	yes + | tr -d '\n' | dd count=2048 status=none of=$(TESTTREE)/a_directory/1_MB_of_+.bin
+	yes ø | tr -d '\n' | dd count=2048 status=none of=$(TESTTREE)/a_directory/1_MB_of_ø.bin  # this will require a ustar header to encode the filename
+	ln $(TESTTREE)/a_directory/1_MB_of_+.bin $(TESTTREE)/shares_inode_with_1_MB_of_+.bin
+	mkfifo $(TESTTREE)/a_fifo
+	$(HAPPY)
+
+test-gnutar-pack:
+	#
+	#
+	# GNU tar: Packing up test filesystem tree…
+	#
+	cd $(TESTDIR); $(TAR) -cvpf gnutarred.tar $(TARUP_DIR)
+	$(HAPPY)
+
+test-deduptar-pack: dev
+	#
+	#
+	# Deduptar: Packing up test filesystem tree…
+	#
+	cd $(TESTDIR); ../$(DEBUGBIN) -c deduptarred.tar -v $(TARUP_DIR)
+	$(HAPPY)
+
+test-maketars: test-clean test-treesetup test-deduptar-pack test-gnutar-pack
+
+test-deduptar-unpacks:
+	#
+	#
+	# Deduptar: Unpack gnutar-generated and deduptar-generated tarballs
+	#
+	cd $(TESTDIR); mkdir deduptar_unpacks_gnutarred
+	cd $(TESTDIR); ../$(DEBUGBIN) -x gnutarred.tar -v -C deduptar_unpacks_gnutarred --freakout
+	cd $(TESTDIR); mkdir deduptar_unpacks_deduptarred
+	cd $(TESTDIR); ../$(DEBUGBIN) -x deduptarred.tar -v -C deduptar_unpacks_deduptarred --freakout
+	$(HAPPY)
+
+test-gnutar-unpacks:
+	#
+	#
+	# GNU tar: Unpack gnutar-generated and deduptar-generated tarballs
+	#
+	cd $(TESTDIR); mkdir gnutar_unpacks_gnutarred
+	cd $(TESTDIR); $(TAR) xvpf gnutarred.tar -C gnutar_unpacks_gnutarred
+	cd $(TESTDIR); mkdir gnutar_unpacks_deduptarred
+	cd $(TESTDIR); $(TAR) xvpf deduptarred.tar -C gnutar_unpacks_deduptarred
+	$(HAPPY)
+
+test-unpacks: test-deduptar-unpacks test-gnutar-unpacks
+
+test-runtests: test-maketars test-unpacks test-dedupped-input test-dedupped-output test-facsimiles
+	@echo -e "\nAll tests passed 🥳"
+
+test-dedupped-input:
+	#
+	#
+	# Checking for 2MB shared (dedupped) data in deduptarred.tar…
+	#
+	btrfs filesystem du --raw test_rw/deduptarred.tar | $(BTRFSDU_ASSERT_2MB_SHARED)
+	$(HAPPY)
+
+test-dedupped-output:
+	#
+	#
+	# Checking for 1MB shared (dedupped) data in unpacked file…
+	#
+	btrfs filesystem du --raw test_rw/deduptar_unpacks_deduptarred/input_tree/shares_inode_with_1_MB_of_+.bin | $(BTRFSDU_ASSERT_1MB_SHARED)
+	$(HAPPY)
+
+test-facsimiles:
+	#
+	#
+	# Checking superficial equivalence of unpacks…
+	#
+	$(RSYNCCMP) $(TESTDIR)/gnutar_unpacks_gnutarred | $(ASSERT_NO_OUTPUT)
+	$(RSYNCCMP) $(TESTDIR)/gnutar_unpacks_deduptarred | $(ASSERT_NO_OUTPUT)
+	$(RSYNCCMP) $(TESTDIR)/deduptar_unpacks_gnutarred | $(ASSERT_NO_OUTPUT)
+	$(RSYNCCMP) $(TESTDIR)/deduptar_unpacks_deduptarred | $(ASSERT_NO_OUTPUT)
+	$(HAPPY)
