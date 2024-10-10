@@ -196,7 +196,10 @@ func extract_one(extractdir_fd int, full_path *string, header *tar.Header, tarfi
 	return was_cloned, nil
 }
 
-func Extract(extractdir string, tarfile *os.File, same_owner *bool, freakout *bool, archive_progress *(chan ProgressMessage)) (allgood bool, abort_err error) {
+func Extract(extractdir string, tarfile *os.File, same_owner *bool, freakout *bool, archive_progress *(chan ProgressMessage), offset uint) (allgood bool, abort_err error) {
+	if (offset != 0) {
+		tarfile.Seek(int64(offset), os.SEEK_SET)
+	}
 	tar_reader := tar.NewReader(tarfile)
 	dir_timestamps := make(map[string][]unix.Timeval)
 	allgood = true

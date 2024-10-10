@@ -58,6 +58,7 @@ func RunCLI() {
 	src_archive := flag.String("x", "", "Tar file to extract from")
 	dst_archive := flag.String("c", "", "Tar file to create")
 	change_dir := flag.String("C", "", "Extract archive contents to DIR rather than to the current working directory.")
+	offset := flag.Uint("offset", 0, "Offset where the archve starts inside the input file.")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `
@@ -98,6 +99,8 @@ Usage:
       In either case, the process exit code will be nonzero.
     --same-owner
       As in GNU tar: upon extraction, set file ownership as recorded in the archive.
+    --offset N
+      Skip the first N bytes of the input file before starting to read the archive.
 
 `, deduptar_banner)
 	}
@@ -144,7 +147,7 @@ Usage:
 				seppuku(err)
 			}
 			defer tarfile.Close()
-			allgood, abort_err := tarops.Extract(fully_qualify_path(change_dir), tarfile, same_owner, freakout, &archive_progress)
+			allgood, abort_err := tarops.Extract(fully_qualify_path(change_dir), tarfile, same_owner, freakout, &archive_progress, *offset)
 			close(archive_progress)
 			awaiter.Wait()
 			if abort_err != nil {
